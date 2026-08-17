@@ -88,6 +88,9 @@
   .pill .ico{font-size:16px;}
   .pill.low{animation:lowPulse 1s ease-in-out infinite;}
   @keyframes lowPulse{0%,100%{box-shadow:0 3px 0 rgba(0,0,0,.2);}50%{box-shadow:0 3px 0 rgba(0,0,0,.2), 0 0 0 5px rgba(224,69,60,.35);}}
+  #comboPill{background:linear-gradient(90deg,#fff3c4,#ffd27a); border-color:var(--accent); color:#8a3a1c;}
+  #comboPill.comboPop{animation:comboPop .22s ease;}
+  @keyframes comboPop{0%{transform:scale(1);}50%{transform:scale(1.22);}100%{transform:scale(1);}}
   #stageLabel{font-size:13px;}
   .iconbtn{
     width:38px; height:38px; border-radius:50%; border:3px solid var(--wood-dark);
@@ -310,6 +313,20 @@
   .statBox .lbl{font-size:11px; font-weight:800; color:var(--wood-dark); text-transform:uppercase;}
   .statBox .val{font-size:26px; font-weight:900; color:var(--ink);}
 
+  .badgeRow{display:flex; justify-content:center; gap:8px; flex-wrap:wrap; margin:2px 0 14px;}
+  .badgeChip{
+    background:linear-gradient(180deg,#fff9e6,#ffe9a8); border:3px solid var(--gold); border-radius:16px;
+    padding:8px 14px; font-weight:900; font-size:13px; color:#6b5100; box-shadow:0 3px 0 rgba(0,0,0,.15);
+  }
+  .reviewBox{
+    background:#fff3ee; border:2px dashed var(--accent); border-radius:12px; padding:10px 14px;
+    font-size:13px; color:#8a3a1c; margin-bottom:14px; text-align:left; line-height:1.5;
+  }
+  .classroomNote{
+    background:linear-gradient(90deg,#e6f4ff,#d6ecff); border:2px solid var(--azv); border-radius:12px;
+    padding:10px 14px; font-size:13px; font-weight:800; color:#1c4a6b; margin-bottom:16px;
+  }
+
   .diffPicker{margin-bottom:16px;}
   .diffLbl{font-weight:800; font-size:13px; text-transform:uppercase; letter-spacing:.5px; color:var(--wood-dark); margin-bottom:8px;}
   .diffRow{display:flex; gap:12px; justify-content:center; flex-wrap:wrap;}
@@ -408,6 +425,7 @@
     <div class="pill"><span class="ico">🏆</span><span id="scoreVal">0</span></div>
     <div class="pill" id="livesPill"><span class="ico">❤️</span><span id="livesVal">25</span></div>
     <div class="pill"><span class="ico">⏱️</span><span id="stopwatchVal">0:00</span></div>
+    <div class="pill hidden" id="comboPill"><span class="ico">🔥</span><span id="comboVal">x2</span></div>
   </div>
   <div class="pill" id="stageLabel">Rule 1 / 8</div>
   <div class="hud-group">
@@ -548,6 +566,11 @@
       <div class="statBox"><div class="lbl">Time</div><div class="val" id="winTimeVal">0:00</div></div>
       <div class="statBox"><div class="lbl">Coins</div><div class="val" id="winCoinsVal">🪙0</div></div>
     </div>
+    <div class="badgeRow" id="badgeRow"></div>
+    <div class="reviewBox hidden" id="reviewBox">
+      <b>📚 Rules to review:</b> <span id="reviewText"></span>
+    </div>
+    <div class="classroomNote">📌 Don't forget to post your score screenshot in our <b>Google Classroom thread</b>!</div>
     <button class="btn" id="saveCardBtn">📸 Save My Scoreboard</button>
     <button class="btn alt" id="viewLbFromWinBtn">🏆 View Leaderboard</button>
     <br>
@@ -713,6 +736,13 @@ let startTimestamp=0, stopwatchInterval=null, finalTimeMs=0;
 let coinsCollected=0, snakeHits=0;
 let specialTimeouts=[]; // pending timeouts for coin/snake spawns, cleared between questions
 let freezeTimeout=null;
+
+/* ---- combo streak + mistake tracking (additive, does not touch existing scoring calls) ---- */
+let streak=0, bestStreak=0;
+let stageMistakes=0;          // wrong whacks in the CURRENT stage
+let totalMistakes=0;          // wrong whacks across the WHOLE run
+let perfectStages=0;          // stages finished with zero mistakes
+let ruleMistakes={};          // { stageIdx: count } -> used for "rules to review"
 
 /* ================= DOM refs ================= */
 const scoreVal=document.getElementById('scoreVal');
@@ -988,6 +1018,19 @@ function updateHUD(){
   livesPill.classList.toggle('low', lives<=5);
   stageLabel.textContent='Rule '+(stageIdx+1)+' / '+STAGES.length;
 }
+const comboPill=document.getElementById('comboPill');
+const comboVal=document.getElementById('comboVal');
+function updateComboPill(){
+  if(!comboPill) return;
+  if(streak>=2){
+    comboVal.textContent='x'+streak;
+    comboPill.classList.remove('hidden');
+    comboPill.classList.add('comboPop');
+    setTimeout(function(){ comboPill.classList.remove('comboPop'); },220);
+  }else{
+    comboPill.classList.add('hidden');
+  }
+}
 function formatTime(ms){
   const s=Math.max(0,Math.floor(ms/1000));
   const m=Math.floor(s/60), ss=s%60;
@@ -1040,6 +1083,8 @@ document.getElementById('confirmNoBtn').addEventListener('click', function(){
 function resetRunState(){
   score=0; lives=START_LIVES; stageIdx=0;
   coinsCollected=0; snakeHits=0;
+  streak=0; bestStreak=0; stageMistakes=0; totalMistakes=0; perfectStages=0; ruleMistakes={};
+  updateComboPill();
   clearSpecialTimeouts();
   clearTimeout(freezeTimeout);
   field.classList.remove('frozen');
@@ -1068,7 +1113,7 @@ function buildPips(){
 }
 
 function beginStage(){
-  correctInStage=0; qIdx=0;
+  correctInStage=0; qIdx=0; stageMistakes=0;
   const st=STAGES[stageIdx];
   document.getElementById('stageIntroTitle').textContent=st.title;
   document.getElementById('stageIntroRule').innerHTML=st.rule;
@@ -1346,15 +1391,22 @@ function handleWhack(moleDiv, hole, isCorrect, e){
   if(isCorrect){
     moleDiv.classList.add('whackedGood');
     sfxWhackGood(); burst(hole,'good');
-    score+=10; correctInStage++;
-    floatMsg(hole,'+10','good');
+    streak++;
+    if(streak>bestStreak) bestStreak=streak;
+    const pts = 10 + Math.min(streak-1,10)*2; // 10,12,14...30 (caps at streak 11+)
+    score+=pts; correctInStage++;
+    floatMsg(hole, streak>=2 ? ('+'+pts+' 🔥x'+streak) : ('+'+pts), 'good');
+    updateComboPill();
   }else{
     moleDiv.classList.add('whackedBad');
     sfxWhackBad(); burst(hole,'bad');
     lives--;
+    streak=0; stageMistakes++; totalMistakes++;
+    ruleMistakes[stageIdx] = (ruleMistakes[stageIdx]||0)+1;
     floatMsg(hole,'-1 ❤️','bad');
     field.style.animation='shake .3s';
     setTimeout(function(){field.style.animation='';},300);
+    updateComboPill();
   }
   updateHUD();
 
@@ -1373,8 +1425,15 @@ function nextQuestionStep(){
 function stageComplete(){
   sfxStageClear();
   const total=STAGES[stageIdx].qs.length;
+  let bonusLine='';
+  if(stageMistakes===0){
+    score+=20;
+    perfectStages++;
+    bonusLine=' 🌟 Perfect stage bonus: +20!';
+  }
   document.getElementById('stageClearText').textContent =
-    'You mastered "'+STAGES[stageIdx].title.split(': ')[1]+'"! Correct: '+correctInStage+'/'+total+' · Score: '+score;
+    'You mastered "'+STAGES[stageIdx].title.split(': ')[1]+'"! Correct: '+correctInStage+'/'+total+' · Score: '+score+bonusLine;
+  updateHUD();
   show(stageClear);
 }
 document.getElementById('stageClearBtn').addEventListener('click', function(){
@@ -1399,6 +1458,36 @@ document.getElementById('retryBtn').addEventListener('click', function(){
   beginStage();
 });
 
+const BADGE_DEFS=[
+  {id:'speed', icon:'⚡', label:'Speed Demon', check:function(){ return finalTimeMs < 120000; }},
+  {id:'perfect', icon:'🎯', label:'Perfect Farmer', check:function(){ return totalMistakes===0; }},
+  {id:'coins', icon:'🪙', label:'Coin Hoarder', check:function(){ return coinsCollected>=20; }}
+];
+function computeBadges(){
+  return BADGE_DEFS.filter(function(b){ return b.check(); });
+}
+function renderBadges(earned){
+  const row=document.getElementById('badgeRow');
+  row.innerHTML='';
+  earned.forEach(function(b){
+    const chip=document.createElement('div');
+    chip.className='badgeChip';
+    chip.textContent=b.icon+' '+b.label;
+    row.appendChild(chip);
+  });
+}
+function renderReview(){
+  const box=document.getElementById('reviewBox');
+  const txt=document.getElementById('reviewText');
+  const entries=Object.keys(ruleMistakes).map(function(k){ return {idx:Number(k), n:ruleMistakes[k]}; })
+    .filter(function(e){ return e.n>0; })
+    .sort(function(a,b){ return b.n-a.n; });
+  if(entries.length===0){ box.classList.add('hidden'); return []; }
+  const names=entries.slice(0,3).map(function(e){ return 'Rule '+(e.idx+1); });
+  txt.textContent = names.join(', ');
+  box.classList.remove('hidden');
+  return names;
+}
 function winGame(){
   stopMusic(); stopStopwatch(); sfxWin();
   finalTimeMs = Date.now()-startTimestamp;
@@ -1406,8 +1495,19 @@ function winGame(){
   document.getElementById('winScoreVal').textContent = score;
   document.getElementById('winTimeVal').textContent = formatTime(finalTimeMs);
   document.getElementById('winCoinsVal').textContent = '🪙'+coinsCollected;
+  const earnedBadges=computeBadges();
+  renderBadges(earnedBadges);
+  const reviewRules=renderReview();
   addToLeaderboard({name:playerName, section:playerSection, score:score, timeMs:finalTimeMs, coins:coinsCollected});
-  logToSheet({name:playerName, section:playerSection, score:score, timeMs:finalTimeMs, coins:coinsCollected});
+  /* Extra fields below are additive only — existing keys (name/section/score/timeMs/coins)
+     are unchanged so the current Google Sheet webhook keeps working exactly as before. */
+  logToSheet({
+    name:playerName, section:playerSection, score:score, timeMs:finalTimeMs, coins:coinsCollected,
+    badges: earnedBadges.map(function(b){ return b.label; }),
+    bestStreak: bestStreak,
+    perfectStages: perfectStages,
+    reviewRules: reviewRules
+  });
   show(winScreen);
 }
 document.getElementById('winRetryBtn').addEventListener('click', function(){
@@ -1553,16 +1653,26 @@ function sectionColor(sec){
   return sec==='ALF' ? '#e0453c' : (sec==='AZV' ? '#3f8fd1' : '#3fae4a');
 }
 function buildScoreCardCanvas(){
-  const c=document.createElement('canvas'); c.width=800; c.height=1000;
+  const c=document.createElement('canvas'); c.width=800; c.height=1180;
   const ctx=c.getContext('2d');
 
-  let g=ctx.createLinearGradient(0,0,0,1000);
-  g.addColorStop(0,'#8fd3ff'); g.addColorStop(0.42,'#d7f2ff');
-  g.addColorStop(0.42,'#6dbb3a'); g.addColorStop(1,'#4d9128');
-  ctx.fillStyle=g; ctx.fillRect(0,0,800,1000);
+  let g=ctx.createLinearGradient(0,0,0,1180);
+  g.addColorStop(0,'#8fd3ff'); g.addColorStop(0.36,'#d7f2ff');
+  g.addColorStop(0.36,'#6dbb3a'); g.addColorStop(1,'#3f7a22');
+  ctx.fillStyle=g; ctx.fillRect(0,0,800,1180);
 
+  // sun glow
+  let sunGlow=ctx.createRadialGradient(660,110,10,660,110,90);
+  sunGlow.addColorStop(0,'rgba(255,213,79,.55)'); sunGlow.addColorStop(1,'rgba(255,213,79,0)');
+  ctx.fillStyle=sunGlow; ctx.beginPath(); ctx.arc(660,110,90,0,Math.PI*2); ctx.fill();
   ctx.beginPath(); ctx.arc(660,110,66,0,Math.PI*2);
   ctx.fillStyle='#ffd54f'; ctx.fill();
+
+  // little clouds for polish
+  ctx.fillStyle='rgba(255,255,255,.85)';
+  [[110,70,26],[150,60,20],[520,50,18],[560,60,24]].forEach(function(p){
+    ctx.beginPath(); ctx.arc(p[0],p[1],p[2],0,Math.PI*2); ctx.fill();
+  });
 
   ctx.fillStyle='#8a2f28';
   ctx.beginPath(); ctx.moveTo(60,220); ctx.lineTo(150,150); ctx.lineTo(240,220); ctx.closePath(); ctx.fill();
@@ -1571,9 +1681,14 @@ function buildScoreCardCanvas(){
   ctx.strokeStyle='#8a2f28'; ctx.lineWidth=3;
   ctx.beginPath(); ctx.moveTo(150,250); ctx.lineTo(150,310); ctx.moveTo(120,280); ctx.lineTo(180,280); ctx.stroke();
 
-  roundRectPath(ctx,60,320,680,600,30);
+  // soft drop shadow behind the main card for a "premium" feel
+  ctx.save();
+  ctx.shadowColor='rgba(0,0,0,.28)'; ctx.shadowBlur=26; ctx.shadowOffsetY=10;
+  roundRectPath(ctx,60,320,680,760,30);
   ctx.fillStyle='#fff8ea'; ctx.fill();
-  ctx.lineWidth=8; ctx.strokeStyle='#8a5a2c'; ctx.stroke();
+  ctx.restore();
+  ctx.lineWidth=8; ctx.strokeStyle='#8a5a2c';
+  roundRectPath(ctx,60,320,680,760,30); ctx.stroke();
 
   ctx.textAlign='center';
   ctx.fillStyle='#3b2413';
@@ -1611,12 +1726,40 @@ function buildScoreCardCanvas(){
   ctx.font='bold 20px "Trebuchet MS", sans-serif';
   ctx.fillText('COMPLETION TIME', 400, 830);
 
+  // achievement badges, if any were earned this run
+  const earned=computeBadges();
+  if(earned.length){
+    const chipFont='bold 18px "Trebuchet MS", sans-serif';
+    ctx.font=chipFont;
+    const gap=14;
+    const widths=earned.map(function(b){ return ctx.measureText(b.icon+' '+b.label).width+34; });
+    const totalW=widths.reduce(function(a,b){return a+b;},0)+gap*(earned.length-1);
+    let cx=400-totalW/2;
+    earned.forEach(function(b,i){
+      const w=widths[i];
+      roundRectPath(ctx,cx,858,w,42,21);
+      ctx.fillStyle='#ffe9a8'; ctx.fill();
+      ctx.lineWidth=3; ctx.strokeStyle='#ffc93c'; ctx.stroke();
+      ctx.fillStyle='#6b5100';
+      ctx.fillText(b.icon+' '+b.label, cx+w/2, 885);
+      cx += w+gap;
+    });
+  }
+
   ctx.font='36px "Trebuchet MS", sans-serif';
-  ctx.fillText('🌷🌼🌻🌷🌸🌼🌻🌷', 400, 880);
+  ctx.fillText('🌷🌼🌻🌷🌸🌼🌻🌷', 400, 940);
 
   ctx.fillStyle='#8a5a2c';
   ctx.font='bold 15px "Trebuchet MS", sans-serif';
-  ctx.fillText('Subject-Verb Agreement Garden • Rule 8/8 Cleared', 400, 900);
+  ctx.fillText('Subject-Verb Agreement Garden • Rule 8/8 Cleared', 400, 962);
+
+  // Google Classroom reminder banner, baked right into the downloaded image
+  roundRectPath(ctx,90,1000,620,60,18);
+  ctx.fillStyle='#d6ecff'; ctx.fill();
+  ctx.lineWidth=3; ctx.strokeStyle='#3f8fd1'; ctx.stroke();
+  ctx.fillStyle='#1c4a6b';
+  ctx.font='bold 17px "Trebuchet MS", sans-serif';
+  ctx.fillText('📌 Post this in our Google Classroom thread!', 400, 1036);
 
   return c;
 }
